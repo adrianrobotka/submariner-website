@@ -1,17 +1,13 @@
 ---
 date: 2021-08-11T12:33:18+01:00
-title: "External Network (Experimental)"
+title: "External Network"
 weight: 50
 ---
 
-This guide covers experimenting with the external network use case.
+This guide covers how to set up Submariner for the external network use case.
 In this use case, pods running in a Kubernetes cluster can access external applications outside of the cluster and vice versa
 by using DNS resolution supported by Lighthouse or manually using the Globalnet ingress IPs.
 In addition to providing connectivity, the source IP of traffic is also preserved.
-
-{{% notice warning %}}
-**This feature is experimental.** The configuration mechanism and observed behavior may change.
-{{% /notice %}}
 
 ### Prerequisites
 
@@ -265,7 +261,7 @@ python -m http.server 80
 
 ##### Verify access to External hosts from clusters
 
-Create Service, Endpoints, ServiceExport to access the test-vm from cluster-a:
+Create headless Service without selector, Endpoints, ServiceExport to access the test-vm from cluster-a:
 
 Note that `Endpoints.subsets.addresses` needs to be modified to IP of test-vm.
 
@@ -281,6 +277,7 @@ spec:
     - protocol: TCP
       port: 80
       targetPort: 80
+  clusterIP: None
 EOF
 
 cat << EOF | kubectl apply -f -
@@ -291,19 +288,26 @@ metadata:
 subsets:
   - addresses:
       - ip: 192.168.122.142
+        hostname: "web0"
     ports:
       - port: 80
+        name: "web"
 EOF
 
 subctl export service -n default test-vm
 ```
 
+{{% notice note %}}
+`subsets.addresses[*].hostname` and `subsets.ports[*].name` in `Endpoints` must be specified.
+Otherwise, corresponding `globalingressip` and `endpointslice` won't be created.
+{{% /notice %}}
+
 Check global ingress IP for test-vm, on cluster-a:
 
 ```bash
-kubectl get globalingressip test-vm
-NAME      IP
-test-vm   242.0.255.253
+kubectl get globalingressip
+NAME                         IP
+ep-test-vm-192.168.122.142   242.0.255.253
 ```
 
 Verify access to test-vm from clusters:
@@ -311,29 +315,19 @@ Verify access to test-vm from clusters:
 ```bash
 export KUBECONFIG=kubeconfig.cluster-a
 kubectl -n default run tmp-shell --rm -i --tty --image quay.io/submariner/nettest -- bash
+curl web0.cluster-a.test-vm.default.svc.clusterset.local
 curl 242.0.255.253
 ```
 
 ```bash
 export KUBECONFIG=kubeconfig.cluster-b
 kubectl -n default run tmp-shell --rm -i --tty --image quay.io/submariner/nettest -- bash
+curl web0.cluster-a.test-vm.default.svc.clusterset.local
 curl 242.0.255.253
 ```
 
-On test-vm, check the console log of HTTP server that there are accesses from pods
-
-{{% notice note %}}
-Currently, **headless** service without selector is not supported for Globalnet,
-therefore service without selector needs to be used.
-This feature is under discussion in [#1537](https://github.com/submariner-io/submariner/issues/1537).
-{{% /notice %}}
-
-{{% notice note %}}
-Currently, DNS resolution for service without selector is not supported,
-therefore global IPs need to be used to access to the external hosts.
-This feature is under discussion in [#603](https://github.com/submariner-io/lighthouse/issues/603).
-Note that there is a workaround to make it resolvable by manually creating endpointslice, as described [here](https://github.com/submariner-io/lighthouse/issues/603#issuecomment-901944297).
-{{% /notice %}}
+On test-vm, check the console log of HTTP server that there are accesses from pods.
+Source IPs for these accesses will be one of the global egress IPs for the cluster.
 
 ##### Verify access to Deployment from non-cluster hosts
 
@@ -357,6 +351,8 @@ Check the console log of HTTP server that there is access from test-vm:
 ```bash
 kubectl logs -l app=nginx
 ```
+
+Source IP for the access will be the global ingress IP of the endpoint for the test-vm.
 
 ##### Verify access to Statefulset from non-cluster hosts
 
@@ -466,6 +462,7 @@ Verify the source IP of each access from each pod to test-vm is the same to its 
 ```bash
 export KUBECONFIG=kubeconfig.cluster-b
 kubectl exec -it web-0 -- bash
+curl web0.cluster-a.test-vm.default.svc.clusterset.local
 curl 242.0.255.253
 exit
 ```
@@ -475,6 +472,7 @@ exit
 ```bash
 export KUBECONFIG=kubeconfig.cluster-b
 kubectl exec -it web-1 -- bash
+curl web0.cluster-a.test-vm.default.svc.clusterset.local
 curl 242.0.255.253
 exit
 ```
